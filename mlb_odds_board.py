@@ -14,22 +14,50 @@ Setup
 -----
 1. pip install -r requirements.txt   (only `requests` is needed, already
    listed there)
-2. export ODDS_API_KEY=your-key-from-the-odds-api.com
-   (optional) export LOCAL_TIMEZONE=America/New_York   # defaults to UTC
+2. copy .env.example to .env and fill in ODDS_API_KEY (or export it in your
+   shell instead - either works)
 3. python mlb_odds_board.py
 
-Each run costs ~3 Odds API credits (3 markets x 1 region), regardless of how
-many games are on the slate that day.
+Credit usage
+------------
+The FIRST run (or any run with no local cache yet) pulls live from the Odds
+API: ~3 credits (3 markets x 1 region), regardless of slate size. Every run
+after that reuses the cached response and makes NO API call - free to
+re-run as many times as you want to tweak the HTML/styling. Pass --refresh
+to force a fresh pull when you actually want updated lines (odds moved,
+new day, etc). Pass --sample to render from built-in fake data instead -
+also free, useful for previewing changes with zero real games available.
 """
 
 from __future__ import annotations
 
+import argparse
+import json
 import os
 import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import requests
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load_dotenv(path: str) -> None:
+    """Minimal .env loader (KEY=VALUE per line) - avoids a python-dotenv
+    dependency just for this. Existing real env vars always win."""
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+_load_dotenv(os.path.join(SCRIPT_DIR, ".env"))
 
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 LOCAL_TZ = ZoneInfo(os.environ.get("LOCAL_TIMEZONE", "UTC"))
@@ -39,7 +67,8 @@ BOOKMAKER = "pinnacle"
 MARKETS = "h2h,spreads,totals"
 ODDS_API_URL = f"https://api.the-odds-api.com/v4/sports/{SPORT}/odds/"
 
-OUTPUT_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mlb_odds_board.html")
+OUTPUT_HTML = os.path.join(SCRIPT_DIR, "mlb_odds_board.html")
+CACHE_FILE = os.path.join(SCRIPT_DIR, "odds_cache.json")
 
 MARKET_LABELS = {
     "h2h": "Moneyline",
@@ -128,6 +157,100 @@ def fetch_pinnacle_odds() -> list[dict]:
         sys.exit(f"Odds API request failed ({resp.status_code}): {resp.text}")
 
     return resp.json()
+
+
+def get_events(force_refresh: bool) -> list[dict]:
+    """
+    Cache-aware wrapper around fetch_pinnacle_odds(). Reuses the last raw
+    API response (odds_cache.json) unless force_refresh is set or no cache
+    exists yet, so previewing HTML/styling changes never costs credits.
+    """
+    if not force_refresh and os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            cache = json.load(f)
+        print(
+            f"Using cached odds from {cache['fetched_at']} - no API call made. "
+            "Run with --refresh to pull fresh lines."
+        )
+        return cache["events"]
+
+    events = fetch_pinnacle_odds()
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump({"fetched_at": datetime.now(LOCAL_TZ).isoformat(), "events": events}, f)
+    return events
+
+
+# Built-in fake data for --sample: same shape The Odds API returns, so it
+# runs through build_board()/render_html() exactly like real events, with
+# zero network calls and zero credits used.
+SAMPLE_EVENTS = [
+    {
+        "commence_time": "2026-08-25T23:05:00Z",
+        "home_team": "Boston Red Sox",
+        "away_team": "New York Yankees",
+        "bookmakers": [
+            {
+                "key": "pinnacle",
+                "markets": [
+                    {
+                        "key": "h2h",
+                        "outcomes": [
+                            {"name": "Boston Red Sox", "price": -130},
+                            {"name": "New York Yankees", "price": 120},
+                        ],
+                    },
+                    {
+                        "key": "spreads",
+                        "outcomes": [
+                            {"name": "Boston Red Sox", "price": -105, "point": -1.5},
+                            {"name": "New York Yankees", "price": -115, "point": 1.5},
+                        ],
+                    },
+                    {
+                        "key": "totals",
+                        "outcomes": [
+                            {"name": "Over", "price": -110, "point": 8.5},
+                            {"name": "Under", "price": -110, "point": 8.5},
+                        ],
+                    },
+                ],
+            }
+        ],
+    },
+    {
+        "commence_time": "2026-08-26T00:10:00Z",
+        "home_team": "Los Angeles Dodgers",
+        "away_team": "San Francisco Giants",
+        "bookmakers": [
+            {
+                "key": "pinnacle",
+                "markets": [
+                    {
+                        "key": "h2h",
+                        "outcomes": [
+                            {"name": "Los Angeles Dodgers", "price": -165},
+                            {"name": "San Francisco Giants", "price": 145},
+                        ],
+                    },
+                    {
+                        "key": "spreads",
+                        "outcomes": [
+                            {"name": "Los Angeles Dodgers", "price": 110, "point": -1.5},
+                            {"name": "San Francisco Giants", "price": -130, "point": 1.5},
+                        ],
+                    },
+                    {
+                        "key": "totals",
+                        "outcomes": [
+                            {"name": "Over", "price": -105, "point": 9.0},
+                            {"name": "Under", "price": -115, "point": 9.0},
+                        ],
+                    },
+                ],
+            }
+        ],
+    },
+]
 
 
 # ---------------------------------------------------------------------------
@@ -293,8 +416,30 @@ def render_html(rows: list[dict]) -> str:
 # Main
 # ---------------------------------------------------------------------------
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="MLB devigged odds board")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Force a fresh pull from the Odds API even if a cache exists (~3 credits).",
+    )
+    group.add_argument(
+        "--sample",
+        action="store_true",
+        help="Render from built-in fake data - no network call, no credits used.",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
-    events = fetch_pinnacle_odds()
+    args = parse_args()
+
+    if args.sample:
+        print("Using built-in sample data - no API call, no credits used.")
+        events = SAMPLE_EVENTS
+    else:
+        events = get_events(force_refresh=args.refresh)
 
     if not events:
         print("No MLB games found for today's slate. Nothing to write.")

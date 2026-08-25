@@ -3,6 +3,7 @@
 
 # Generated output (regenerated on every run)
 mlb_odds_board.html
+odds_cache.json
 
 # Python
 __pycache__/
