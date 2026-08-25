@@ -330,13 +330,19 @@ def render_html(rows: list[dict]) -> str:
         for row in game_rows:
             markets.setdefault(row["market"], []).append(row)
 
+        # Which single row - across ALL markets for this game - has the
+        # highest fair probability. That's the game's clear leader: no
+        # averaging or edge-distance math, just the highest Fair % wins.
+        top_row = max(game_rows, key=lambda r: r["fair_multiplicative_pct"], default=None)
+
         market_tables = []
         for market_name, market_rows in markets.items():
-            # Highlight whichever side of this market the fair (devigged)
-            # probability favors - "most likely to hit" is a per-market call
-            # (moneyline favorite, run-line favorite, and O/U favorite can
-            # all point different directions), not one pick per game.
+            # Highlight whichever side of THIS market the fair (devigged)
+            # probability favors - a per-market call (moneyline favorite,
+            # run-line favorite, and O/U favorite can all point different
+            # directions), separate from the game-wide leader above.
             favorite = max(market_rows, key=lambda r: r["fair_multiplicative_pct"], default=None)
+            is_top_market = market_name == top_row["market"]
 
             body_rows = "".join(
                 f"""
@@ -351,7 +357,7 @@ def render_html(rows: list[dict]) -> str:
             )
             market_tables.append(
                 f"""
-                <h3>{market_name}</h3>
+                <h3>{market_name}{' <span class="star">⭐ Highest Confidence</span>' if is_top_market else ''}</h3>
                 <table>
                   <thead>
                     <tr>
@@ -367,11 +373,20 @@ def render_html(rows: list[dict]) -> str:
                 </table>"""
             )
 
+        headline = (
+            f"""<div class="headline">
+              \U0001f3af Highest-Confidence Market: <strong>{top_row['market']} — {top_row['selection']}</strong> ({top_row['fair_multiplicative_pct']:.1f}% fair)
+            </div>"""
+            if top_row
+            else ""
+        )
+
         game_cards.append(
             f"""
             <div class="card">
               <h2>{game}</h2>
               <p class="start-time">{start}</p>
+              {headline}
               {''.join(market_tables)}
             </div>"""
         )
@@ -391,7 +406,10 @@ def render_html(rows: list[dict]) -> str:
   .card {{ background: #1a1d24; border: 1px solid #2a2e37; border-radius: 10px; padding: 20px; max-width: 820px; margin: 0 auto 24px auto; }}
   .card h2 {{ margin: 0 0 2px 0; font-size: 19px; }}
   .start-time {{ color: #9aa0a6; font-size: 13px; margin: 0 0 14px 0; }}
+  .headline {{ background: rgba(111, 209, 138, 0.12); border: 1px solid rgba(111, 209, 138, 0.35); border-radius: 8px; padding: 10px 14px; font-size: 14px; margin: 4px 0 4px 0; }}
+  .headline strong {{ color: #6fd18a; }}
   h3 {{ font-size: 14px; text-transform: uppercase; letter-spacing: 0.04em; color: #9aa0a6; margin: 18px 0 6px 0; }}
+  h3 .star {{ text-transform: none; letter-spacing: normal; color: #6fd18a; font-size: 11px; margin-left: 6px; }}
   table {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
   th, td {{ text-align: left; padding: 6px 8px; border-bottom: 1px solid #2a2e37; }}
   th {{ color: #9aa0a6; font-weight: 600; font-size: 12px; text-transform: uppercase; }}
