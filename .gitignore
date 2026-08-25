@@ -1,0 +1,10 @@
+# Secrets
+.env
+
+# Generated output (regenerated on every run)
+mlb_odds_board.html
+
+# Python
+__pycache__/
+*.pyc
+venv/
