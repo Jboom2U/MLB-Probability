@@ -209,10 +209,16 @@ def render_html(rows: list[dict]) -> str:
 
         market_tables = []
         for market_name, market_rows in markets.items():
+            # Highlight whichever side of this market the fair (devigged)
+            # probability favors - "most likely to hit" is a per-market call
+            # (moneyline favorite, run-line favorite, and O/U favorite can
+            # all point different directions), not one pick per game.
+            favorite = max(market_rows, key=lambda r: r["fair_multiplicative_pct"], default=None)
+
             body_rows = "".join(
                 f"""
-                <tr>
-                  <td>{r['selection']}</td>
+                <tr class="{'pick' if r is favorite else ''}">
+                  <td>{r['selection']}{' <span class="badge">Most Likely</span>' if r is favorite else ''}</td>
                   <td>{format_odds(r['odds'])}</td>
                   <td>{r['raw_pct']:.1f}%</td>
                   <td class="fair">{r['fair_multiplicative_pct']:.1f}%</td>
@@ -267,6 +273,9 @@ def render_html(rows: list[dict]) -> str:
   th, td {{ text-align: left; padding: 6px 8px; border-bottom: 1px solid #2a2e37; }}
   th {{ color: #9aa0a6; font-weight: 600; font-size: 12px; text-transform: uppercase; }}
   td.fair {{ color: #6fd18a; font-weight: 600; }}
+  tr.pick {{ background: rgba(111, 209, 138, 0.08); }}
+  tr.pick td:first-child {{ font-weight: 600; }}
+  .badge {{ display: inline-block; background: #6fd18a; color: #0f1115; font-size: 10px; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; margin-left: 6px; vertical-align: middle; }}
   .empty {{ text-align: center; color: #9aa0a6; padding: 60px 0; }}
 </style>
 </head>
