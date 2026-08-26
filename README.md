@@ -22,7 +22,13 @@ once the house edge is removed.
    - **Power** — solve for exponent `k` so `p1^k + p2^k = 1`, via bisection
      (pure Python, no `scipy`).
 4. Writes `mlb_odds_board.html` — one card per game, with a mini-table per
-   market showing both fair-probability figures side by side.
+   market showing both fair-probability figures side by side, plus a
+   headline naming whichever market/side has the single highest fair
+   probability for that game.
+5. Tracks that headline pick for every game in `pick_history.json`, and
+   automatically grades yesterday's (and any other still-pending) picks
+   using free final scores from MLB's own Stats API once they're final —
+   see **Running Record** below.
 
 ## Setup
 
@@ -74,6 +80,33 @@ On Windows, double-click:
 The free tier's 500 credits/month covers well over a hundred `--refresh`
 pulls, since normal re-runs between refreshes don't touch the API at all.
 
+## Running Record
+
+Each game's "Highest-Confidence Market" pick (one per game — whichever
+market/side has the single highest fair probability) is logged to
+`pick_history.json` the first time it's computed each day, and never
+overwritten later that day even if you `--refresh` and the line moves.
+
+The next time you run the script on a later day, it checks
+[MLB's free public Stats API](https://statsapi.mlb.com) (no key required,
+doesn't touch your Odds API credits) for final scores on any date with
+still-`Pending` picks, and grades each one:
+
+- **Moneyline** — win/loss on the final score.
+- **Run Line** — covers if `(picked team's margin) + point > 0`.
+- **Total** — Over/Under vs. combined runs; exact ties grade as `Push`.
+
+A "Running Record" section at the bottom of `mlb_odds_board.html` shows
+every graded pick with a date filter (dropdown: a single day, or "All
+Time") and a live W-L(-Push) tally. `--sample` runs still show this
+section (reading the real `pick_history.json`) — they just don't add fake
+games to it. `pick_history.json` is committed to git, not gitignored, since
+it's your actual track record, not disposable cache.
+
+If a game's final score can't be matched (rare — usually a doubleheader or
+a team-name mismatch), that entry just stays `Pending` rather than being
+graded wrong.
+
 ## Notes
 
 - Pinnacle is grouped under the `eu` region in The Odds API, not `us` —
@@ -81,3 +114,7 @@ pulls, since normal re-runs between refreshes don't touch the API at all.
 - If Pinnacle hasn't posted a game yet (early in the day) or the MLB slate
   is empty (off-day), the script says so and exits cleanly without writing
   a stale/empty file.
+- Set `LOCAL_TIMEZONE` to your real zone (e.g. `America/New_York`) rather
+  than leaving it at the UTC default — late night games otherwise get
+  grouped into the *next* UTC calendar date in the Running Record, split
+  away from the rest of that day's slate.

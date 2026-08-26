@@ -265,9 +265,11 @@ def build_board(events: list[dict]) -> list[dict]:
         away = event.get("away_team", "Away")
         commence = event.get("commence_time")
         local_time = "TBD"
+        game_date = None
         if commence:
             dt = datetime.fromisoformat(commence.replace("Z", "+00:00")).astimezone(LOCAL_TZ)
             local_time = dt.strftime("%a %I:%M %p %Z")
+            game_date = dt.strftime("%Y-%m-%d")
 
         pinnacle = next(
             (bm for bm in event.get("bookmakers", []) if bm.get("key") == BOOKMAKER),
@@ -288,7 +290,8 @@ def build_board(events: list[dict]) -> list[dict]:
 
             for outcome, raw_p, mult_p, power_p in zip(outcomes, raw_probs, fair_multiplicative, fair_power):
                 point = outcome.get("point")
-                selection = outcome.get("name", "")
+                team = outcome.get("name", "")  # team name, or "Over"/"Under" for totals
+                selection = team
                 if point is not None:
                     formatted_point = f"{point:+g}" if key == "spreads" else f"{point:g}"
                     selection = f"{selection} {formatted_point}"
@@ -296,8 +299,13 @@ def build_board(events: list[dict]) -> list[dict]:
                 rows.append(
                     {
                         "game": f"{away} @ {home}",
+                        "home_team": home,
+                        "away_team": away,
                         "start": local_time,
+                        "game_date": game_date,
                         "market": MARKET_LABELS[key],
+                        "team": team,
+                        "point": point,
                         "selection": selection,
                         "odds": outcome["price"],
                         "raw_pct": raw_p * 100,
@@ -310,6 +318,146 @@ def build_board(events: list[dict]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# High-confidence pick tracking
+# ---------------------------------------------------------------------------
+
+HISTORY_FILE = os.path.join(SCRIPT_DIR, "pick_history.json")
+
+MLB_SCHEDULE_URL = "https://statsapi.mlb.com/api/v1/schedule"
+
+
+def top_pick_for_game(game_rows: list[dict]) -> dict | None:
+    """
+    The single row - across ALL markets for one game - with the highest
+    fair probability. This is "the" high-confidence pick for that game:
+    used both for the on-page headline/star badge and for the tracked
+    running record, so it's defined in exactly one place.
+    """
+    return max(game_rows, key=lambda r: r["fair_multiplicative_pct"], default=None)
+
+
+def load_history() -> dict:
+    if not os.path.exists(HISTORY_FILE):
+        return {}
+    with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_history(history: dict) -> None:
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history, f, indent=2, sort_keys=True)
+
+
+def record_todays_picks(rows: list[dict], history: dict) -> None:
+    """
+    Log today's high-confidence pick for each game into history, once.
+    Idempotent per (date, game) - re-running --refresh mid-day (odds
+    moved) must never overwrite a pick already locked in earlier that day.
+    """
+    games: dict[str, list[dict]] = {}
+    for row in rows:
+        games.setdefault(row["game"], []).append(row)
+
+    for game, game_rows in games.items():
+        pick = top_pick_for_game(game_rows)
+        if pick is None or pick["game_date"] is None:
+            continue
+
+        day = history.setdefault(pick["game_date"], [])
+        if any(entry["game"] == game for entry in day):
+            continue  # already locked in earlier today
+
+        day.append(
+            {
+                "game": pick["game"],
+                "home_team": pick["home_team"],
+                "away_team": pick["away_team"],
+                "market": pick["market"],
+                "selection": pick["selection"],
+                "team": pick["team"],
+                "point": pick["point"],
+                "odds": pick["odds"],
+                "fair_pct": round(pick["fair_multiplicative_pct"], 1),
+                "result": "Pending",
+            }
+        )
+
+
+def _fetch_final_scores(date: str) -> dict[tuple[str, str], tuple[int, int]]:
+    """{(home_team, away_team): (home_score, away_score)} for Final games
+    on `date`, from MLB's free public Stats API (no key, no credits)."""
+    resp = requests.get(MLB_SCHEDULE_URL, params={"sportId": 1, "date": date}, timeout=30)
+    if resp.status_code != 200:
+        print(f"MLB Stats API request failed for {date} ({resp.status_code}) - leaving that day's picks Pending.")
+        return {}
+
+    scores: dict[tuple[str, str], tuple[int, int]] = {}
+    for day in resp.json().get("dates", []):
+        for game in day.get("games", []):
+            if game.get("status", {}).get("abstractGameState") != "Final":
+                continue
+            teams = game.get("teams", {})
+            home = teams.get("home", {})
+            away = teams.get("away", {})
+            home_name = home.get("team", {}).get("name")
+            away_name = away.get("team", {}).get("name")
+            if home_name is None or away_name is None:
+                continue
+            scores[(home_name, away_name)] = (home.get("score"), away.get("score"))
+    return scores
+
+
+def _grade_entry(entry: dict, home_score: int, away_score: int) -> str:
+    is_home = entry["team"] == entry["home_team"]
+    team_score = home_score if is_home else away_score
+    opp_score = away_score if is_home else home_score
+
+    if entry["market"] == "Moneyline":
+        return "W" if team_score > opp_score else "L"
+
+    if entry["market"] == "Run Line":
+        margin = (team_score - opp_score) + entry["point"]
+        if margin > 0:
+            return "W"
+        if margin < 0:
+            return "L"
+        return "Push"
+
+    if entry["market"] == "Total":
+        combined = home_score + away_score
+        over = entry["team"] == "Over"
+        if combined == entry["point"]:
+            return "Push"
+        return "W" if (combined > entry["point"]) == over else "L"
+
+    return "Pending"  # unrecognized market - leave ungraded rather than guess
+
+
+def grade_pending_picks(history: dict) -> dict:
+    """Grade any Pending entries from a date strictly before today (local)
+    using free final scores from MLB's Stats API. One API call per distinct
+    date that actually has something Pending; zero calls otherwise."""
+    today = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
+
+    for date, entries in history.items():
+        if date >= today:
+            continue
+        if not any(e["result"] == "Pending" for e in entries):
+            continue
+
+        scores = _fetch_final_scores(date)
+        for entry in entries:
+            if entry["result"] != "Pending":
+                continue
+            final = scores.get((entry["home_team"], entry["away_team"]))
+            if final is None or final[0] is None or final[1] is None:
+                continue  # game not final yet, or a name mismatch - stay Pending
+            entry["result"] = _grade_entry(entry, final[0], final[1])
+
+    return history
+
+
+# ---------------------------------------------------------------------------
 # Render
 # ---------------------------------------------------------------------------
 
@@ -317,7 +465,106 @@ def format_odds(odds: float) -> str:
     return f"+{odds:g}" if odds > 0 else f"{odds:g}"
 
 
-def render_html(rows: list[dict]) -> str:
+def render_history_section(history: dict) -> str:
+    """
+    Running record of daily high-confidence picks, with a client-side date
+    filter (plain JS, no server - matches the rest of this page). The raw
+    history is embedded as JSON; a small script builds the filter dropdown
+    and table, and recomputes the W-L-Push tally whenever it changes.
+    """
+    if not history:
+        return """
+        <div class="card history-card">
+          <h2>Running Record</h2>
+          <p class="empty" style="padding: 20px 0;">No graded picks yet - check back after the first day's games finish.</p>
+        </div>"""
+
+    history_json = json.dumps(history)
+
+    return f"""
+    <div class="card history-card">
+      <h2>Running Record &mdash; High-Confidence Picks</h2>
+      <p class="start-time">One pick per game: whichever market/side had the single highest fair probability that day.</p>
+      <div class="history-controls">
+        <label for="history-filter">Show:</label>
+        <select id="history-filter"></select>
+        <span id="history-tally" class="history-tally"></span>
+      </div>
+      <table id="history-table">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Game</th>
+            <th>Pick</th>
+            <th>Fair %</th>
+            <th>Result</th>
+          </tr>
+        </thead>
+        <tbody id="history-body"></tbody>
+      </table>
+    </div>
+    <script id="history-data" type="application/json">{history_json}</script>
+    <script>
+      (function() {{
+        var history = JSON.parse(document.getElementById('history-data').textContent);
+        var dates = Object.keys(history).sort().reverse();
+        var select = document.getElementById('history-filter');
+        var allOpt = document.createElement('option');
+        allOpt.value = 'all';
+        allOpt.textContent = 'All Time';
+        select.appendChild(allOpt);
+        dates.forEach(function(d) {{
+          var opt = document.createElement('option');
+          opt.value = d;
+          opt.textContent = d;
+          select.appendChild(opt);
+        }});
+
+        function resultClass(result) {{
+          if (result === 'W') return 'result-w';
+          if (result === 'L') return 'result-l';
+          if (result === 'Push') return 'result-push';
+          return 'result-pending';
+        }}
+
+        function render() {{
+          var chosen = select.value;
+          var body = document.getElementById('history-body');
+          body.innerHTML = '';
+          var w = 0, l = 0, push = 0, pending = 0;
+
+          dates.forEach(function(d) {{
+            if (chosen !== 'all' && chosen !== d) return;
+            history[d].forEach(function(e) {{
+              if (e.result === 'W') w++;
+              else if (e.result === 'L') l++;
+              else if (e.result === 'Push') push++;
+              else pending++;
+
+              var tr = document.createElement('tr');
+              tr.innerHTML =
+                '<td>' + d + '</td>' +
+                '<td>' + e.game + '</td>' +
+                '<td>' + e.market + ' — ' + e.selection + '</td>' +
+                '<td>' + e.fair_pct.toFixed(1) + '%</td>' +
+                '<td><span class="result-badge ' + resultClass(e.result) + '">' + e.result + '</span></td>';
+              body.appendChild(tr);
+            }});
+          }});
+
+          var tally = w + '-' + l;
+          if (push) tally += ' (' + push + ' push)';
+          if (pending) tally += ', ' + pending + ' pending';
+          document.getElementById('history-tally').textContent = tally;
+        }}
+
+        select.addEventListener('change', render);
+        render();
+      }})();
+    </script>"""
+
+
+def render_html(rows: list[dict], history: dict) -> str:
     games: dict[str, list[dict]] = {}
     for row in rows:
         games.setdefault(f"{row['game']}|{row['start']}", []).append(row)
@@ -333,7 +580,7 @@ def render_html(rows: list[dict]) -> str:
         # Which single row - across ALL markets for this game - has the
         # highest fair probability. That's the game's clear leader: no
         # averaging or edge-distance math, just the highest Fair % wins.
-        top_row = max(game_rows, key=lambda r: r["fair_multiplicative_pct"], default=None)
+        top_row = top_pick_for_game(game_rows)
 
         market_tables = []
         for market_name, market_rows in markets.items():
@@ -392,6 +639,7 @@ def render_html(rows: list[dict]) -> str:
         )
 
     generated_at = datetime.now(LOCAL_TZ).strftime("%a %b %d, %Y - %I:%M %p %Z")
+    history_section = render_history_section(history)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -418,6 +666,15 @@ def render_html(rows: list[dict]) -> str:
   tr.pick td:first-child {{ font-weight: 600; }}
   .badge {{ display: inline-block; background: #6fd18a; color: #0f1115; font-size: 10px; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; margin-left: 6px; vertical-align: middle; }}
   .empty {{ text-align: center; color: #9aa0a6; padding: 60px 0; }}
+  .history-card {{ max-width: 900px; }}
+  .history-controls {{ display: flex; align-items: center; gap: 10px; margin: 10px 0 16px 0; font-size: 13px; color: #9aa0a6; }}
+  .history-controls select {{ background: #0f1115; color: #e6e8eb; border: 1px solid #2a2e37; border-radius: 6px; padding: 4px 8px; font-size: 13px; }}
+  .history-tally {{ font-weight: 700; color: #e6e8eb; font-size: 15px; margin-left: 4px; }}
+  .result-badge {{ display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 4px; }}
+  .result-w {{ background: rgba(111, 209, 138, 0.18); color: #6fd18a; }}
+  .result-l {{ background: rgba(224, 108, 117, 0.18); color: #e06c75; }}
+  .result-push {{ background: rgba(154, 160, 166, 0.18); color: #9aa0a6; }}
+  .result-pending {{ background: rgba(224, 178, 96, 0.18); color: #e0b260; }}
 </style>
 </head>
 <body>
@@ -426,6 +683,7 @@ def render_html(rows: list[dict]) -> str:
   <p>Pinnacle lines, vig removed. Generated {generated_at}. Not a prediction &mdash; the market's own fair price.</p>
 </div>
 {''.join(game_cards) if game_cards else '<p class="empty">No Pinnacle MLB odds available right now.</p>'}
+{history_section}
 </body>
 </html>"""
 
@@ -468,7 +726,13 @@ def main() -> None:
         print("Games were returned but Pinnacle hasn't posted odds for any of them yet.")
         return
 
-    html = render_html(rows)
+    history = load_history()
+    if not args.sample:
+        record_todays_picks(rows, history)
+        history = grade_pending_picks(history)
+        save_history(history)
+
+    html = render_html(rows, history)
     with open(OUTPUT_HTML, "w", encoding="utf-8") as f:
         f.write(html)
 
