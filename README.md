@@ -104,8 +104,11 @@ pulls, since normal re-runs between refreshes don't touch the API at all.
 
 Each game's "Highest-Confidence Market" pick (one per game — whichever
 market/side has the single highest fair probability) is logged to
-`pick_history.json` the first time it's computed each day, and never
-overwritten later that day even if you `--refresh` and the line moves.
+`pick_history.json` every time you run the script for real. Whatever that
+run's board shows is what gets tracked and graded — if you run more than
+once in a day and the line has moved, the later run's pick replaces the
+earlier one for that game/day (no duplicates), so the record always
+matches the page it's shown on.
 
 The next time you run the script on a later day, it checks
 [MLB's free public Stats API](https://statsapi.mlb.com) (no key required,

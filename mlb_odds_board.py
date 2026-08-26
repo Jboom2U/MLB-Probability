@@ -356,9 +356,10 @@ def save_history(history: dict) -> None:
 
 def record_todays_picks(rows: list[dict], history: dict) -> None:
     """
-    Log today's high-confidence pick for each game into history, once.
-    Idempotent per (date, game) - re-running --refresh mid-day (odds
-    moved) must never overwrite a pick already locked in earlier that day.
+    Log today's high-confidence pick for each game into history - whatever
+    this run's board shows is what gets tracked and graded. Replaces any
+    existing entry for (date, game) rather than locking in a first pull, so
+    the Running Record always matches the page it's shown on.
     """
     games: dict[str, list[dict]] = {}
     for row in rows:
@@ -370,9 +371,7 @@ def record_todays_picks(rows: list[dict], history: dict) -> None:
             continue
 
         day = history.setdefault(pick["game_date"], [])
-        if any(entry["game"] == game for entry in day):
-            continue  # already locked in earlier today
-
+        day[:] = [entry for entry in day if entry["game"] != game]  # drop any prior entry for this game
         day.append(
             {
                 "game": pick["game"],
@@ -634,30 +633,12 @@ def render_html(rows: list[dict], history: dict) -> str:
             else ""
         )
 
-        # If today's pick was already locked into the Running Record
-        # earlier, and the market has since moved so a DIFFERENT side is
-        # now on top, say so - otherwise the headline above and the
-        # tracked record below silently disagree and look like a bug.
-        line_moved = ""
-        if top_row and top_row.get("game_date"):
-            locked = next(
-                (e for e in history.get(top_row["game_date"], []) if e["game"] == game),
-                None,
-            )
-            if locked and locked["selection"] != top_row["selection"]:
-                line_moved = f"""<div class="line-moved">
-                  \U0001f4cc Locked pick (recorded earlier today, tracked in the Running Record):
-                  <strong>{locked['market']} — {locked['selection']}</strong> ({locked['fair_pct']:.1f}% fair).
-                  The market has since moved to favor {top_row['selection']} instead.
-                </div>"""
-
         game_cards.append(
             f"""
             <div class="card">
               <h2>{game}</h2>
               <p class="start-time">{start}</p>
               {headline}
-              {line_moved}
               {''.join(market_tables)}
             </div>"""
         )
@@ -680,8 +661,6 @@ def render_html(rows: list[dict], history: dict) -> str:
   .start-time {{ color: #9aa0a6; font-size: 13px; margin: 0 0 14px 0; }}
   .headline {{ background: rgba(111, 209, 138, 0.12); border: 1px solid rgba(111, 209, 138, 0.35); border-radius: 8px; padding: 10px 14px; font-size: 14px; margin: 4px 0 4px 0; }}
   .headline strong {{ color: #6fd18a; }}
-  .line-moved {{ background: rgba(224, 178, 96, 0.1); border: 1px solid rgba(224, 178, 96, 0.35); border-radius: 8px; padding: 10px 14px; font-size: 13px; color: #c9c2b6; margin: 4px 0 4px 0; }}
-  .line-moved strong {{ color: #e0b260; }}
   h3 {{ font-size: 14px; text-transform: uppercase; letter-spacing: 0.04em; color: #9aa0a6; margin: 18px 0 6px 0; }}
   h3 .star {{ text-transform: none; letter-spacing: normal; color: #6fd18a; font-size: 11px; margin-left: 6px; }}
   table {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
