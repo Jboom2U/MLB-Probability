@@ -88,6 +88,15 @@ On Windows, double-click:
 - **`preview_sample.bat`** — renders fake sample data, zero cost, good for
   previewing style changes
 
+Both `.bat` files now auto-detect `python` vs. the `py` launcher and print
+a clear error (staying open until you press a key) if neither is on PATH,
+instead of silently doing nothing.
+
+If double-clicking a `.bat` seems to do nothing, run it from PowerShell
+instead so you can actually read any error: `.\refresh_odds.bat` (the
+leading `.\` is required by PowerShell for anything in the current folder
+— that's PowerShell's own safety default, not specific to this project).
+
 The free tier's 500 credits/month covers well over a hundred `--refresh`
 pulls, since normal re-runs between refreshes don't touch the API at all.
 
