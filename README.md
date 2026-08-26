@@ -50,13 +50,24 @@ export LOCAL_TIMEZONE=America/New_York
 Using a `.env` file is recommended on Windows since it lets the `.bat`
 shortcuts below work without an open terminal.
 
-## Run
+## Daily use
+
+Each day you want fresh odds, run:
 
 ```bash
-python mlb_odds_board.py
+python mlb_odds_board.py --refresh
 ```
 
-Open the generated `mlb_odds_board.html` in any browser.
+(or double-click **`refresh_odds.bat`** on Windows). That's the whole daily
+habit — it pulls live odds (~3 credits), grades yesterday's picks, updates
+the Running Record, writes `mlb_odds_board.html`, **and opens it in your
+browser automatically.** Pass `--no-open` to skip the auto-open (e.g. for
+a scheduled/cron run on a machine with no display).
+
+Plain `python mlb_odds_board.py` (no flags) also opens the browser, but
+only pulls live if no cache exists yet — otherwise it just re-shows
+whatever was last fetched, which is what you want for re-opening the page
+later the same day without spending more credits.
 
 ## Credit usage — cached by default
 

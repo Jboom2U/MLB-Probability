@@ -35,6 +35,7 @@ import argparse
 import json
 import os
 import sys
+import webbrowser
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -705,6 +706,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Render from built-in fake data - no network call, no credits used.",
     )
+    parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Don't auto-open the generated HTML in a browser (for cron/server use).",
+    )
     return parser.parse_args()
 
 
@@ -738,6 +744,12 @@ def main() -> None:
 
     game_count = len({row["game"] for row in rows})
     print(f"Wrote {game_count} game(s) / {len(rows)} row(s) -> {OUTPUT_HTML}")
+
+    if not args.no_open:
+        try:
+            webbrowser.open("file://" + OUTPUT_HTML)
+        except Exception:
+            pass  # headless/server environment - the file's still written either way
 
 
 if __name__ == "__main__":
