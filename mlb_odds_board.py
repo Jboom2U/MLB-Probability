@@ -258,8 +258,12 @@ SAMPLE_EVENTS = [
 # Assemble rows
 # ---------------------------------------------------------------------------
 
-def build_board(events: list[dict]) -> list[dict]:
+def build_board(events: list[dict]) -> tuple[list[dict], list[str]]:
+    """Returns (rows, skipped) - skipped names games The Odds API returned
+    for today's slate that Pinnacle hasn't posted odds for yet, so a
+    smaller-than-expected board is visible instead of silent."""
     rows: list[dict] = []
+    skipped: list[str] = []  # games with no Pinnacle line posted yet, for diagnostics
 
     for event in events:
         home = event.get("home_team", "Home")
@@ -277,6 +281,7 @@ def build_board(events: list[dict]) -> list[dict]:
             None,
         )
         if pinnacle is None:
+            skipped.append(f"{away} @ {home} ({local_time})")
             continue  # Pinnacle hasn't posted this game yet
 
         for market in pinnacle.get("markets", []):
@@ -315,7 +320,7 @@ def build_board(events: list[dict]) -> list[dict]:
                     }
                 )
 
-    return rows
+    return rows, skipped
 
 
 # ---------------------------------------------------------------------------
@@ -727,7 +732,13 @@ def main() -> None:
         print("No MLB games found for today's slate. Nothing to write.")
         return
 
-    rows = build_board(events)
+    rows, skipped = build_board(events)
+    if skipped:
+        print(
+            f"Note: {len(skipped)} game(s) returned by the Odds API have no Pinnacle line "
+            f"posted yet, so they're not on the board this run: {', '.join(skipped)}. "
+            "Re-run --refresh later today once Pinnacle posts them."
+        )
     if not rows:
         print("Games were returned but Pinnacle hasn't posted odds for any of them yet.")
         return
