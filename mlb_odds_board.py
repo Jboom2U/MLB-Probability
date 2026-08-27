@@ -650,6 +650,8 @@ def render_html(rows: list[dict], history: dict) -> str:
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
 <title>MLB Devigged Odds Board</title>
 <style>
   body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; background: #0f1115; color: #e6e8eb; padding: 24px; }}
@@ -757,7 +759,12 @@ def main() -> None:
 
     if not args.no_open:
         try:
-            webbrowser.open("file://" + OUTPUT_HTML)
+            # Cache-bust with a timestamp query string - otherwise a browser
+            # that already has this same file:// URL open in a tab just
+            # refocuses that tab without reloading it, so a second run's
+            # freshly regenerated content never actually shows up until you
+            # manually hit refresh. The differing URL forces a real reload.
+            webbrowser.open(f"file://{OUTPUT_HTML}?t={int(datetime.now().timestamp())}")
         except Exception:
             pass  # headless/server environment - the file's still written either way
 
