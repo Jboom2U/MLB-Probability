@@ -485,6 +485,7 @@ def render_history_section(history: dict) -> str:
         </div>"""
 
     history_json = json.dumps(history)
+    today = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
 
     return f"""
     <div class="card history-card">
@@ -512,6 +513,7 @@ def render_history_section(history: dict) -> str:
     <script>
       (function() {{
         var history = JSON.parse(document.getElementById('history-data').textContent);
+        var today = {json.dumps(today)};
         var dates = Object.keys(history).sort().reverse();
         var select = document.getElementById('history-filter');
         var allOpt = document.createElement('option');
@@ -521,9 +523,12 @@ def render_history_section(history: dict) -> str:
         dates.forEach(function(d) {{
           var opt = document.createElement('option');
           opt.value = d;
-          opt.textContent = d;
+          opt.textContent = (d === today ? d + ' (Today)' : d);
           select.appendChild(opt);
         }});
+        // Default to today's picks if there are any yet; otherwise show
+        // everything rather than defaulting to an empty table.
+        select.value = dates.indexOf(today) !== -1 ? today : 'all';
 
         function resultClass(result) {{
           if (result === 'W') return 'result-w';
